@@ -1,4 +1,6 @@
 # V0.0: jkhuang 2022-04-01 Code initialization
+# V0.1: jkhuang 2022-04-02 finish data preparation
+# V0.2: jkhuang 2022-04-03 finish verilog generation function
 
 import pandas as pd
 import re
@@ -8,7 +10,7 @@ import warnings
 import numpy as np
 
 
-def find_file_list(dir, recursion_flag, type=None):
+def find_file_list(dir, recursion_flag, type=None, gen_dir=None):
     list = []
     if os.path.isdir(dir):
         input_root = dir
@@ -45,8 +47,12 @@ def find_file_list(dir, recursion_flag, type=None):
                 if r.search(x):
                     list.append(root + x)
             break
+
     if list == []:
-        raise RuntimeError(f'No {type} file is found.')
+        if type == 'excel':
+            raise RuntimeError(f'No {type} file is found.')
+        elif type == 'verilog' and not gen_dir:
+            raise RuntimeError(f'No {type} file is found and no generate dir is specified')
 
     return list
 
@@ -67,6 +73,8 @@ class Module:
         self.module_localvariable = None
         self.sub_module = []
         self.regular_expression = []
+        self.vfile_content = None
+        self.vfile_dir = None
 
     def type_check(self, type_series):
         type_lst = [
@@ -318,7 +326,8 @@ class Module:
             self.module_localparam.loc[:, 'sign'][self.module_localparam.loc[:, 'sign'].isnull()] = 'unsigned'
             self.module_ioport.loc[:, 'data type'][self.module_ioport.loc[:, 'data type'].isnull()] = 'wire'
             self.module_ioport.loc[:, 'sign'][self.module_ioport.loc[:, 'sign'].isnull()] = 'unsigned'
-            self.module_localvariable.loc[:, 'data type'][self.module_localvariable.loc[:, 'data type'].isnull()] = 'wire'
+            self.module_localvariable.loc[:, 'data type'][
+                self.module_localvariable.loc[:, 'data type'].isnull()] = 'wire'
             self.module_localvariable.loc[:, 'sign'][self.module_localvariable.loc[:, 'sign'].isnull()] = 'unsigned'
         elif self.module_verilog_file_type == 'sv':
             self.module_parameter.loc[:, 'data type'][self.module_parameter.loc[:, 'data type'].isnull()] = 'int'
@@ -327,26 +336,70 @@ class Module:
             self.module_localparam.loc[:, 'sign'][self.module_localparam.loc[:, 'sign'].isnull()] = 'unsigned'
             self.module_ioport.loc[:, 'data type'][self.module_ioport.loc[:, 'data type'].isnull()] = 'logic'
             self.module_ioport.loc[:, 'sign'][self.module_ioport.loc[:, 'sign'].isnull()] = 'unsigned'
-            self.module_localvariable.loc[:, 'data type'][self.module_localvariable.loc[:, 'data type'].isnull()] = 'logic'
+            self.module_localvariable.loc[:, 'data type'][
+                self.module_localvariable.loc[:, 'data type'].isnull()] = 'logic'
             self.module_localvariable.loc[:, 'sign'][self.module_localvariable.loc[:, 'sign'].isnull()] = 'unsigned'
         else:
             raise RuntimeError(f'module {self.module_name} verilog file type {self.module_verilog_file_type} error')
 
 
+class ContentIndentLst:
+    def __init(self, dataframe):
+        content_indet_lst = []
+        for i in range(dataframe.shape[1]):
+            content_indet_lst.append([])  # continue from here
+
+
+
 class ModuleList:
     'consist of all the information of module'
 
-    def __init__(self, vfile_list, xfile_list, throughout_flag, completion_flag):
-        self.module_list = []
+    def __init__(self, vfile_list, xfile_list, throughout_flag, completion_flag, gen_dir):
+        self.module_list = []  # module specified in excel
         self.throughout_flag = throughout_flag
         self.completion_flag = completion_flag
         self.iter_num = 0
         self.vfile_list = vfile_list
         self.xfile_list = xfile_list
+        self.gen_dir = gen_dir
+
+        # check input
+        if not os.path.isdir(self.gen_dir):
+            raise RuntimeError(f'Error: generate directory {self.gen_dir} is not a directory!')
 
         self.module_list_gen()
         self.module_list_check()
         self.module_list_completion()
+
+    # insert the xfile information into vfile
+    def change_vfile(self):
+        0
+
+    def generate_vfile(self):
+        if self.gen_dir:
+            not_exist_flag = 1
+            path = None
+            index = None
+            gen_content = [
+                '  /*AUTOINOUTPARAM*/\n',
+                ')(\n',
+                '  /*AUTOARG*/\n',
+                ');\n',
+                '\n',
+                '  /*AUTOVARIABLE*/\n',
+                '\n',
+                '  /*AUTOINST*/\n',
+                '\n',
+                'endmodule\n',
+            ]
+            for module_list_item in self.module_list:
+                if not module_list_item.vfile_dir:
+                    path = os.path.join(self.gen_dir,
+                                        module_list_item.module_name + '.' + module_list_item.module_verilog_file_type)
+                    verilog_file = open(path, 'w+')
+                    verilog_file.write(f"module {module_list_item.module_name} #(\n" + "".join(gen_content))
+                    verilog_file.close()
+                    self.module_list[self.module_list.index(module_list_item)].vfile_dir = path
 
     def module_list_gen(self):
         module_name_str = r'^(\w+)\((v|sv)\)$'
@@ -391,6 +444,7 @@ class ModuleList:
 
                 for i in range(len(table_module_index)):
                     if i == 0:  # the first row must be top module
+
                         m = re_module_name_str.search(table_module_series[i])
                         if m:
                             module.module_name = m.group(1)
@@ -398,6 +452,15 @@ class ModuleList:
                         else:
                             module.module_name = table_module_series[i]
                             module.module_verilog_file_type = None
+
+                        # find vfile directory
+                        vfile_str = module.module_name + '\\.' + module.module_verilog_file_type + '$'
+                        re_vfile_str = re.compile(vfile_str)
+                        for vfile_list_item in self.vfile_list:
+                            if re_vfile_str.search(vfile_list_item):
+                                module.vfile_dir = vfile_list_item
+                                break
+
                         setattr(module, 'module_port', table.loc[
                                                        table_module_index[0]:table_module_index[1] - 1,
                                                        'type':'multiple dimension/connect bit'])
@@ -423,6 +486,7 @@ class ModuleList:
                                                            module.module_port['type'] != 'inout') & (
                                                            module.module_port['type'] != 'parameter') & (
                                                            module.module_port['type'] != 'localparam')])
+
                     elif not i == (len(table_module_index) - 1):
                         # regular expression
                         if table_module_series[table_module_index[i]][0:3] == '(r)':
@@ -477,13 +541,13 @@ class ModuleList:
             if verilog_file_type != 'v' and verilog_file_type != 'sv':  # not v or sv file
                 break
             if module_name not in self.get_module_name_lst():
-                raise RuntimeError(f'can\'t find module {module_name} in excel')
+                warnings.warn(f'Warning: can\'t find module {module_name} in excel')
 
         # check the data
         for module_list_item in self.module_list:
             module_list_item.data_check()  # only check the sntax of the sub module port
 
-        # check if the sub module in excel
+        # check if the sub module in excel, and there may be redundancy in the sub module port
         self.sub_module_check()
 
     def get_module(self, module_name):
@@ -498,13 +562,27 @@ class ModuleList:
             lst.append(module_list_item.module_name)
         return lst
 
+    def find_module_verilog_type(self, module_name):
+        module = self.get_module(module_name)
+        return module.module_verilog_file_type
+
+    # check sub module name and sub module port
     def sub_module_check(self):
-        module_name_lst = self.get_module_name_lst()
         for module_list_item in self.module_list:
             for sub_module_item in module_list_item.sub_module:
-                if sub_module_item['sub_module_name'] not in module_name_lst:
-                    sub_module_name = sub_module_item['sub_module_name']
-                    raise RuntimeError(f'Error: sub module {sub_module_name} of module {module_list_item.module_name} is not in excel!')
+                sub_module_top = self.get_module(
+                    sub_module_item['sub_module_name'])  # sub_module_top is the module information of the sub module
+                sub_module_name = sub_module_item['sub_module_name']
+                if not sub_module_top:
+                    raise RuntimeError(
+                        f'Error: sub module {sub_module_name} of module {module_list_item.module_name} is not in excel!')
+                else:
+                    for sub_module_port_name_item in sub_module_item['sub_module_port']['name']:
+                        if isinstance(sub_module_port_name_item, str):
+                            if (sub_module_port_name_item not in sub_module_top.module_ioport['name'].values) and (
+                                    sub_module_port_name_item not in sub_module_top.module_parameter['name'].values):
+                                raise RuntimeError(
+                                    f'Error: sub module variable {sub_module_port_name_item} of sub module {sub_module_name} of module {module_list_item.module_name} is not correct!')
 
     def __len__(self):
         return len(self.module_list)
@@ -538,18 +616,23 @@ parser.add_option("-r", "--recursion", default=False, action="store_true",
 parser.add_option("-t", "--throughout", default=False, action="store_true",
                   help="connect the variable to the top module port directly",
                   dest="throughout_flag")
-parser.add_option("-c", "--completion", default=True, action="store_true",
+parser.add_option("-c", "--complete", default=True, action="store_true",
                   help="auto complete the default data type and sign",
-                  dest="completion_flag")  # change default in the future
+                  dest="complete_flag")  # change default in the future
+parser.add_option("-g", "--gen_dir", default='./gen',
+                  help="auto generate verilog file if not exists",
+                  dest="gen_dir")
 (option, args) = parser.parse_args()
 verilog_dir = option.verilog_dir
 module_dir = option.module_dir
 delete_flag = option.delete_flag
 recursion_flag = option.recursion_flag
 throughout_flag = option.throughout_flag
-completion_flag = option.completion_flag
+completion_flag = option.complete_flag
+gen_dir = option.gen_dir
 
-vfile_list = find_file_list(verilog_dir, recursion_flag, type='verilog')
-xfile_list = find_file_list(module_dir, recursion_flag, type='excel')
-module_list = ModuleList(vfile_list, xfile_list, throughout_flag, completion_flag)
+vfile_list = find_file_list(verilog_dir, recursion_flag, type='verilog', gen_dir=gen_dir)
+xfile_list = find_file_list(module_dir, recursion_flag, type='excel', gen_dir=gen_dir)
+module_list = ModuleList(vfile_list, xfile_list, throughout_flag, completion_flag, gen_dir)
+module_list.generate_vfile()
 0
